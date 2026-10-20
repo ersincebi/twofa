@@ -8,9 +8,11 @@ import UniformTypeIdentifiers
 private enum Screen: Equatable {
     case list
     case form(Account?)
+    case connect
 }
 
 struct RootView: View {
+    @EnvironmentObject private var store: AccountStore
     @State private var screen: Screen = .list
 
     var body: some View {
@@ -19,13 +21,17 @@ struct RootView: View {
             case .list:
                 AccountListView(
                     onAdd: { screen = .form(nil) },
-                    onEdit: { screen = .form($0) }
+                    onEdit: { screen = .form($0) },
+                    onConnect: { screen = .connect }
                 )
             case .form(let account):
                 AccountFormView(existing: account) { screen = .list }
+            case .connect:
+                ConnectView { screen = .list }
             }
         }
         .frame(width: 320)
+        .onAppear { Task { await store.sync() } }
     }
 }
 
@@ -37,6 +43,7 @@ struct AccountListView: View {
 
     let onAdd: () -> Void
     let onEdit: (Account) -> Void
+    let onConnect: () -> Void
 
     private var filtered: [Account] {
         guard !search.isEmpty else { return store.accounts }
@@ -78,8 +85,16 @@ struct AccountListView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
 
+            if case .failed(let message) = store.syncStatus {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 6)
+            }
+
             Divider()
-            FooterView(onAdd: onAdd)
+            FooterView(onAdd: onAdd, onConnect: onConnect)
         }
     }
 }
@@ -234,12 +249,14 @@ private struct FooterView: View {
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     let onAdd: () -> Void
+    let onConnect: () -> Void
 
     var body: some View {
         HStack {
             Button(action: onAdd) {
                 Label("Add", systemImage: "plus")
             }
+            SyncIndicator(status: store.syncStatus)
             Spacer()
             Toggle("Launch at login", isOn: $launchAtLogin)
                 .toggleStyle(.checkbox)
@@ -250,6 +267,13 @@ private struct FooterView: View {
                 Button("Export Backup…") { Backup.export(store.accounts) }
                     .disabled(store.accounts.isEmpty)
                 Button("Import Backup…") { Backup.importFile(into: store) }
+                Divider()
+                if store.isSyncEnabled {
+                    Button("Sync Now") { Task { await store.sync() } }
+                    Button("Disconnect Sync") { store.disconnect() }
+                } else {
+                    Button("Connect to Sync…", action: onConnect)
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -274,6 +298,93 @@ private struct FooterView: View {
         } catch {
             NSLog("TwoFA: launch at login failed: \(error)")
             launchAtLogin = SMAppService.mainApp.status == .enabled
+        }
+    }
+}
+
+private struct SyncIndicator: View {
+    let status: SyncStatus
+
+    var body: some View {
+        switch status {
+        case .off:
+            EmptyView()
+        case .syncing:
+            ProgressView().controlSize(.mini)
+        case .synced:
+            icon("checkmark.icloud", .green, "Synced with 2fa.ersincebi.com")
+        case .offline:
+            icon("icloud.slash", .orange, "Offline — showing the saved copy")
+        case .failed(let message):
+            icon("exclamationmark.icloud", .red, message)
+        }
+    }
+
+    private func icon(_ name: String, _ color: Color, _ help: String) -> some View {
+        Image(systemName: name)
+            .foregroundStyle(color)
+            .help(help)
+    }
+}
+
+// MARK: - Connect to sync
+
+struct ConnectView: View {
+    @EnvironmentObject private var store: AccountStore
+    @State private var password = ""
+    @State private var error: String?
+    @State private var working = false
+
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Connect to Sync")
+                .font(.headline)
+            Text("Use the master password of your vault at 2fa.ersincebi.com. Accounts on this Mac are added to it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            SecureField("Master password", text: $password)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(connect)
+                .disabled(working)
+
+            if let error {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                if working {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+                Button("Cancel", action: onDone)
+                    .keyboardShortcut(.cancelAction)
+                Button("Connect", action: connect)
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(password.isEmpty || working)
+            }
+        }
+        .padding(14)
+    }
+
+    private func connect() {
+        guard !password.isEmpty, !working else { return }
+        working = true
+        error = nil
+        Task {
+            do {
+                try await store.connect(password: password)
+                onDone()
+            } catch {
+                self.error = error.localizedDescription
+            }
+            working = false
         }
     }
 }

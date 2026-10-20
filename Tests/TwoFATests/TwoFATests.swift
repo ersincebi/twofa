@@ -88,3 +88,79 @@ final class QRCodeTests: XCTestCase {
         XCTAssertEqual(QRCode.messages(in: image), [link])
     }
 }
+
+final class VaultCryptoTests: XCTestCase {
+    /// Produced by web/public/crypto.js, so both apps must agree on keys and format.
+    private let salt = "AAECAwQFBgcICQoLDA0ODw=="
+    private let webAuthToken = "6oGlDNHGAZQmuV5AwE4KnTDuLtDccn8uSbDFaknmYUQ="
+    private let webData = "9aIGKfsqqXOKYJk7D5cF2O7hoUXOfCTEzMHAyfI+WsjZvG8E2kFseD0oOINV+W0yxUoaVOrD9uUuqV3aKANf/GiWBaIrdCshetJTE+G+akX/wFapu+YUbZUWgvz/K/+YhF5WjT7lOgZ5s94yUfVKHHURDN4Ov5qVRODSL4OhTS9Xga+SDG+ETwwoZdF3kF4cDQftDua2P/5rADUnCJ4yxQiL9MOZVOy9906K4+8AJ09FIq5eiZGgOzx8+Krk7EbJqjoygfiUIzY="
+
+    func testMatchesWebApp() throws {
+        let session = try VaultCrypto.deriveSession(password: "correct horse battery staple", salt: salt)
+        XCTAssertEqual(session.authToken, webAuthToken)
+
+        let accounts = try VaultCrypto.decrypt(webData, key: session.encKey)
+        XCTAssertEqual(accounts.count, 1)
+        XCTAssertEqual(accounts[0].issuer, "GitHub")
+        XCTAssertEqual(accounts[0].secret, "JBSWY3DPEHPK3PXP")
+        XCTAssertEqual(accounts[0].id.uuidString.lowercased(), "6f1c2a7e-3b4d-4e5f-8a9b-0c1d2e3f4a5b")
+
+        let roundTrip = try VaultCrypto.decrypt(VaultCrypto.encrypt(accounts, key: session.encKey), key: session.encKey)
+        XCTAssertEqual(roundTrip, accounts)
+    }
+
+    func testWrongPasswordFails() throws {
+        let wrong = try VaultCrypto.deriveSession(password: "nope", salt: salt)
+        XCTAssertNotEqual(wrong.authToken, webAuthToken)
+        XCTAssertThrowsError(try VaultCrypto.decrypt(webData, key: wrong.encKey))
+    }
+}
+
+/// Runs against `wrangler dev` when TWOFA_TEST_SERVER is set (e.g. http://localhost:8799).
+final class VaultClientIntegrationTests: XCTestCase {
+    func testCreateReadWriteConflict() async throws {
+        guard let server = ProcessInfo.processInfo.environment["TWOFA_TEST_SERVER"].flatMap(URL.init(string:)) else {
+            throw XCTSkip("TWOFA_TEST_SERVER not set")
+        }
+        let anonymous = VaultClient(token: nil, baseURL: server)
+        let initialSalt = try await anonymous.salt()
+        XCTAssertNil(initialSalt)
+
+        // Create the vault the way the web app does (first write claims it).
+        let salt = Data((0..<16).map { _ in UInt8.random(in: 0...255) }).base64EncodedString()
+        let session = try VaultCrypto.deriveSession(password: "integration test pw", salt: salt)
+        var request = URLRequest(url: server.appendingPathComponent("/api/vault"))
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(session.authToken)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "version": 0, "data": try VaultCrypto.encrypt([], key: session.encKey), "salt": salt,
+        ])
+        let (_, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let storedSalt = try await anonymous.salt()
+        XCTAssertEqual(storedSalt, salt)
+
+        let client = VaultClient(token: session.authToken, baseURL: server)
+        let (version, data) = try await client.fetch()
+        XCTAssertEqual(version, 1)
+        XCTAssertEqual(try VaultCrypto.decrypt(try XCTUnwrap(data), key: session.encKey), [])
+
+        let account = Account(issuer: "GitHub", name: "me", secret: "JBSWY3DPEHPK3PXP")
+        let v2 = try await client.put(version: 1, data: VaultCrypto.encrypt([account], key: session.encKey))
+        XCTAssertEqual(v2, 2)
+
+        do {
+            _ = try await client.put(version: 1, data: VaultCrypto.encrypt([], key: session.encKey))
+            XCTFail("stale write should conflict")
+        } catch SyncError.conflict(let current, let currentData) {
+            XCTAssertEqual(current, 2)
+            XCTAssertEqual(try VaultCrypto.decrypt(try XCTUnwrap(currentData), key: session.encKey), [account])
+        }
+
+        let wrong = try VaultCrypto.deriveSession(password: "wrong", salt: salt)
+        do {
+            _ = try await VaultClient(token: wrong.authToken, baseURL: server).fetch()
+            XCTFail("wrong password should be rejected")
+        } catch SyncError.wrongPassword {}
+    }
+}

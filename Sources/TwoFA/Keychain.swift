@@ -36,6 +36,10 @@ enum Keychain {
         }
     }
 
+    static func delete(_ account: String) {
+        SecItemDelete(baseQuery(account) as CFDictionary)
+    }
+
     @discardableResult
     static func write(_ data: Data, account: String) -> OSStatus {
         let query = baseQuery(account)
@@ -45,7 +49,7 @@ enum Keychain {
         var item = query
         item[kSecValueData as String] = data
         item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
-        item[kSecAttrLabel as String] = "TwoFA accounts"
+        item[kSecAttrLabel as String] = "TwoFA \(account)"
         return SecItemAdd(item as CFDictionary, nil)
     }
 }
