@@ -1,21 +1,20 @@
 import Foundation
 
-/// Persists accounts as JSON in ~/Library/Application Support/TwoFA (owner read/write only).
+/// Persists accounts as JSON in a single login-keychain item.
 @MainActor
 final class AccountStore: ObservableObject {
     @Published private(set) var accounts: [Account] = []
+    /// Set when the keychain could not be read; saving is disabled so nothing gets overwritten.
+    @Published private(set) var loadError: String?
 
-    private let fileURL: URL
+    private static let keychainAccount = "accounts"
+
+    /// Pre-keychain storage, migrated and removed on first launch.
+    private let legacyFileURL = FileManager.default
+        .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("TwoFA/accounts.json")
 
     init() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let directory = support.appendingPathComponent("TwoFA", isDirectory: true)
-        try? FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        fileURL = directory.appendingPathComponent("accounts.json")
         load()
     }
 
@@ -41,20 +40,49 @@ final class AccountStore: ObservableObject {
         save()
     }
 
+    /// Adds accounts whose secret isn't already present. Returns how many were added.
+    @discardableResult
+    func importAccounts(_ incoming: [Account]) -> Int {
+        var added = 0
+        for account in incoming where !accounts.contains(where: { $0.secret == account.secret }) {
+            accounts.append(account)
+            added += 1
+        }
+        if added > 0 { save() }
+        return added
+    }
+
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
-        accounts = (try? JSONDecoder().decode([Account].self, from: data)) ?? []
+        switch Keychain.read(Self.keychainAccount) {
+        case .found(let data):
+            accounts = (try? JSONDecoder().decode([Account].self, from: data)) ?? []
+        case .notFound:
+            migrateLegacyFile()
+        case .failed(let status):
+            loadError = "Couldn't read the keychain (error \(status)). Reopen TwoFA and allow access."
+            NSLog("TwoFA: keychain read failed: \(status)")
+        }
+    }
+
+    private func migrateLegacyFile() {
+        guard let data = try? Data(contentsOf: legacyFileURL),
+              let legacy = try? JSONDecoder().decode([Account].self, from: data)
+        else { return }
+        accounts = legacy
+        save()
+        // Only drop the plaintext file once the keychain copy reads back intact.
+        if case .found(let stored) = Keychain.read(Self.keychainAccount),
+           (try? JSONDecoder().decode([Account].self, from: stored)) == legacy {
+            try? FileManager.default.removeItem(at: legacyFileURL)
+        }
     }
 
     private func save() {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(accounts) else { return }
-        do {
-            try data.write(to: fileURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-        } catch {
-            NSLog("TwoFA: failed to save accounts: \(error)")
+        guard loadError == nil else { return }
+        guard let data = try? JSONEncoder().encode(accounts) else { return }
+        let status = Keychain.write(data, account: Self.keychainAccount)
+        if status != errSecSuccess {
+            NSLog("TwoFA: keychain write failed: \(status)")
         }
     }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import ServiceManagement
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Root
 
@@ -53,7 +54,12 @@ struct AccountListView: View {
                     .padding([.horizontal, .top], 10)
             }
 
-            if store.accounts.isEmpty {
+            if let loadError = store.loadError {
+                Text(loadError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(12)
+            } else if store.accounts.isEmpty {
                 EmptyStateView(onAdd: onAdd)
             } else {
                 ScrollView {
@@ -224,6 +230,7 @@ private struct CountdownRing: View {
 // MARK: - Footer
 
 private struct FooterView: View {
+    @EnvironmentObject private var store: AccountStore
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     let onAdd: () -> Void
@@ -239,6 +246,17 @@ private struct FooterView: View {
                 .font(.caption)
                 .onChange(of: launchAtLogin, perform: setLaunchAtLogin)
             Spacer()
+            Menu {
+                Button("Export Backup…") { Backup.export(store.accounts) }
+                    .disabled(store.accounts.isEmpty)
+                Button("Import Backup…") { Backup.importFile(into: store) }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(store.loadError != nil)
             Button("Quit") { NSApp.terminate(nil) }
                 .keyboardShortcut("q")
         }
@@ -289,6 +307,9 @@ struct AccountFormView: View {
                         .font(.system(.body, design: .monospaced))
                         .onSubmit(save)
                     Button("Paste", action: pasteSecret)
+                        .help("Paste a secret, an otpauth:// link or a QR code screenshot")
+                    Button(action: openQRImage) { Image(systemName: "qrcode.viewfinder") }
+                        .help("Open a QR code image")
                 }
                 Picker("Digits", selection: $draft.digits) {
                     ForEach(6...8, id: \.self) { Text("\($0)").tag($0) }
@@ -330,9 +351,27 @@ struct AccountFormView: View {
     }
 
     private func pasteSecret() {
-        if let text = NSPasteboard.general.string(forType: .string) {
+        if let image = NSImage(pasteboard: NSPasteboard.general) {
+            useQRCode(in: image)
+        } else if let text = NSPasteboard.general.string(forType: .string) {
             draft.secret = text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+    }
+
+    private func openQRImage() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.runModal() == .OK, let url = panel.url, let image = NSImage(contentsOf: url) else { return }
+        useQRCode(in: image)
+    }
+
+    private func useQRCode(in image: NSImage) {
+        guard let link = QRCode.messages(in: image).first(where: { $0.lowercased().hasPrefix("otpauth://totp") }) else {
+            error = "No TOTP QR code found in the image."
+            return
+        }
+        draft.secret = link
     }
 
     /// If an otpauth:// link was pasted, fill the whole form from it.

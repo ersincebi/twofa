@@ -57,3 +57,24 @@ extension Account {
         }
     }
 }
+
+extension Account {
+    /// The standard `otpauth://` link for this account, understood by most authenticator apps.
+    var otpauthURI: String {
+        var components = URLComponents()
+        components.scheme = "otpauth"
+        components.host = "totp"
+        components.path = "/" + (issuer.isEmpty ? name : "\(issuer):\(name)")
+        var query = [URLQueryItem(name: "secret", value: secret)]
+        if !issuer.isEmpty {
+            query.append(URLQueryItem(name: "issuer", value: issuer))
+        }
+        query += [
+            URLQueryItem(name: "algorithm", value: algorithm.rawValue),
+            URLQueryItem(name: "digits", value: String(digits)),
+            URLQueryItem(name: "period", value: String(period)),
+        ]
+        components.queryItems = query
+        return components.string ?? ""
+    }
+}

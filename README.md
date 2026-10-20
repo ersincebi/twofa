@@ -1,0 +1,54 @@
+# TwoFA
+
+A tiny macOS menu bar app for TOTP two-factor codes. Click a code to copy it.
+
+- Works with any service that shows a TOTP QR code or secret (GitHub, Google, AWS, …)
+- Add accounts by pasting a secret, an `otpauth://` link or a QR code screenshot, or by opening a QR image
+- Secrets are stored in your login Keychain
+- Backup / restore as plain `otpauth://` links (one per line), compatible with most authenticator apps
+- SHA1 / SHA256 / SHA512, 6–8 digits, 15/30/60 s periods
+- Universal binary, macOS 13+
+
+## Install
+
+```sh
+brew tap ersincebi/twofa https://github.com/ersincebi/twofa
+brew install --cask twofa
+```
+
+Update with `brew upgrade --cask twofa`.
+
+Or download `TwoFA.zip` from [Releases](https://github.com/ersincebi/twofa/releases), unzip it into
+`/Applications`, and since the app isn't notarized, run once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/TwoFA.app
+```
+
+## Notes
+
+- **Keychain prompt after updates.** The app is ad-hoc signed, so macOS treats each new version as a
+  new app and asks once whether TwoFA may access its keychain item. Choose **Always Allow**.
+- **Backups are unencrypted.** The exported file contains your secrets in plain text — store it
+  somewhere safe (e.g. an encrypted disk image or password manager).
+
+## Development
+
+```sh
+swift test          # needs Xcode (XCTest isn't in the Command Line Tools)
+./build.sh          # universal build/TwoFA.app + build/TwoFA.zip
+./build.sh --install
+```
+
+### Releasing
+
+```sh
+git tag v1.1.0 && git push origin v1.1.0
+```
+
+The [release workflow](.github/workflows/release.yml) runs the tests, builds the app, publishes the
+GitHub release and updates the version and checksum in [`Casks/twofa.rb`](Casks/twofa.rb).
+
+## License
+
+MIT
