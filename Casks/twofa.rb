@@ -1,6 +1,6 @@
 cask "twofa" do
-  version "1.1.0"
-  sha256 "c3834464a929713e9dcfd66891adacde89e9359ef0f5f94188c8b9de8ac63485"
+  version "1.2.0"
+  sha256 "180c8ea863c23f7878113f8751f9a8625fc4357d261ed8b5a59352269e9b24b1"
 
   url "https://github.com/ersincebi/twofa/releases/download/v#{version}/TwoFA.zip"
   name "TwoFA"
