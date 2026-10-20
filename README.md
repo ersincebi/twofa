@@ -53,3 +53,8 @@ GitHub release and updates the version and checksum in [`Casks/twofa.rb`](Casks/
 ## License
 
 MIT
+
+## Phone / web version
+
+See [`web/`](web/README.md): an installable PWA with an end-to-end encrypted vault synced through
+Cloudflare, at https://2fa.ersincebi.com.
