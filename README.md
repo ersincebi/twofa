@@ -13,6 +13,7 @@ A tiny macOS menu bar app for TOTP two-factor codes. Click a code to copy it.
 
 ```sh
 brew tap ersincebi/twofa https://github.com/ersincebi/twofa
+brew trust ersincebi/twofa
 brew install --cask twofa
 ```
 
